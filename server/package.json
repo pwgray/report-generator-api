@@ -1,0 +1,5 @@
+{
+  "dependencies": {
+    "report-generator-server": "file:.."
+  }
+}
