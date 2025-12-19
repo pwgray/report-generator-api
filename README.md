@@ -10,12 +10,16 @@ Quickstart (standalone):
    npm install
    ```
 
-2. Copy `.env.example` to `.env` and set your server-side Gemini key (do NOT commit `.env`):
+2. Create a `.env` file with required configuration (see `ENV_SETUP.md` for details):
 
    ```text
    GEMINI_API_KEY=your_server_gemini_api_key_here
    PORT=4000
+   DB_TYPE=sqlite
+   SQLITE_DB=./server/db.sqlite
    ```
+
+   For detailed configuration options including PostgreSQL, MySQL, and MS SQL Server, see [ENV_SETUP.md](./ENV_SETUP.md).
 
 3. Run in development:
 
@@ -33,5 +37,8 @@ Quickstart (standalone):
 - POST /api/datasources/query — accepts { dataSourceId, table, columns: string[], limit?: number } and returns an array of rows from the selected table (read-only, limited by `limit`).
 
 Notes:
-- This server uses SQLite for local dev (file: `server/db.sqlite`). For production, switch to a managed DB and update `data-source.ts` accordingly.
+- This server uses SQLite by default for local dev (file: `server/db.sqlite`).
+- For production, configure PostgreSQL, MySQL, or MS SQL Server via environment variables (see `ENV_SETUP.md`).
+- Database configuration is fully managed via `.env` file - no code changes needed to switch databases.
 - Keep `GEMINI_API_KEY` server-side; do not expose it to frontend builds.
+- Set `DB_SYNCHRONIZE=false` in production to prevent automatic schema changes.
