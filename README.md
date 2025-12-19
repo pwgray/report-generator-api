@@ -29,6 +29,8 @@ Quickstart (standalone):
    - CRUD /api/reports
    - POST /api/ai/generate
    - POST /api/ai/discover
+- POST /api/datasources/test-connection — accepts { type: 'postgres'|'sql', connectionDetails: { host, port, database, username, password } } and returns a JSON array of tables/columns when successful (Postgres and Microsoft SQL Server supported)
+- POST /api/datasources/query — accepts { dataSourceId, table, columns: string[], limit?: number } and returns an array of rows from the selected table (read-only, limited by `limit`).
 
 Notes:
 - This server uses SQLite for local dev (file: `server/db.sqlite`). For production, switch to a managed DB and update `data-source.ts` accordingly.
