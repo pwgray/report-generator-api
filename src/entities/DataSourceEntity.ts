@@ -20,6 +20,9 @@ export class DataSourceEntity {
   @Column({ type: 'simple-json', default: '[]' })
   tables!: any[]; // store TableDef[] as JSON
 
+  @Column({ type: 'simple-json', default: '[]', nullable: true })
+  views?: any[]; // store ViewDef[] as JSON
+
   @Column({ name: 'created_at', type: 'text' })
   createdAt!: string;
 }

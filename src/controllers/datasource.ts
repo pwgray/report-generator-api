@@ -98,15 +98,138 @@ datasourceRouter.post('/test-connection', async (req, res) => {
       for (const row of tablesRes.rows) {
         const tableName = row.table_name;
       console.debug('[datasource] fetching columns for table', { table: tableName });
-      const colsRes = await client.query(`SELECT column_name, data_type FROM information_schema.columns WHERE table_schema='public' AND table_name = $1`, [tableName]);
+      
+      // Fetch columns with additional metadata
+      const colsRes = await client.query(`
+        SELECT 
+          c.column_name, 
+          c.data_type,
+          c.is_nullable,
+          CASE WHEN pk.column_name IS NOT NULL THEN true ELSE false END as is_primary_key,
+          CASE WHEN uc.column_name IS NOT NULL THEN true ELSE false END as is_unique
+        FROM information_schema.columns c
+        LEFT JOIN (
+          SELECT ku.column_name
+          FROM information_schema.table_constraints tc
+          JOIN information_schema.key_column_usage ku 
+            ON tc.constraint_name = ku.constraint_name
+            AND tc.table_schema = ku.table_schema
+          WHERE tc.constraint_type = 'PRIMARY KEY'
+            AND tc.table_schema = 'public'
+            AND tc.table_name = $1
+        ) pk ON c.column_name = pk.column_name
+        LEFT JOIN (
+          SELECT ku.column_name
+          FROM information_schema.table_constraints tc
+          JOIN information_schema.key_column_usage ku 
+            ON tc.constraint_name = ku.constraint_name
+            AND tc.table_schema = ku.table_schema
+          WHERE tc.constraint_type = 'UNIQUE'
+            AND tc.table_schema = 'public'
+            AND tc.table_name = $1
+        ) uc ON c.column_name = uc.column_name
+        WHERE c.table_schema='public' AND c.table_name = $1
+      `, [tableName]);
+      
       console.debug('[datasource] columns query returned rows', { table: tableName, count: (colsRes?.rows || []).length });
+      
         const columns = colsRes.rows.map((c: any) => ({
           id: crypto.randomUUID(),
           name: c.column_name,
           type: mapPgTypeToColumnType(c.data_type),
           alias: c.column_name,
           description: '',
-          sampleValue: ''
+          sampleValue: '',
+          isNullable: c.is_nullable === 'YES',
+          isPrimaryKey: c.is_primary_key,
+          isUnique: c.is_unique
+        }));
+
+        // Fetch foreign keys
+        const fkRes = await client.query(`
+          SELECT
+            tc.constraint_name,
+            kcu.column_name,
+            ccu.table_name AS referenced_table,
+            ccu.column_name AS referenced_column,
+            rc.update_rule as on_update,
+            rc.delete_rule as on_delete
+          FROM information_schema.table_constraints tc
+          JOIN information_schema.key_column_usage kcu 
+            ON tc.constraint_name = kcu.constraint_name
+            AND tc.table_schema = kcu.table_schema
+          JOIN information_schema.constraint_column_usage ccu
+            ON ccu.constraint_name = tc.constraint_name
+            AND ccu.table_schema = tc.table_schema
+          JOIN information_schema.referential_constraints rc
+            ON tc.constraint_name = rc.constraint_name
+            AND tc.table_schema = rc.constraint_schema
+          WHERE tc.constraint_type = 'FOREIGN KEY'
+            AND tc.table_schema = 'public'
+            AND tc.table_name = $1
+        `, [tableName]);
+
+        const foreignKeys = fkRes.rows.map((fk: any) => ({
+          id: crypto.randomUUID(),
+          name: fk.constraint_name,
+          columnName: fk.column_name,
+          referencedTable: fk.referenced_table,
+          referencedColumn: fk.referenced_column,
+          onUpdate: fk.on_update,
+          onDelete: fk.on_delete
+        }));
+
+        // Fetch indexes
+        const idxRes = await client.query(`
+          SELECT
+            i.relname as index_name,
+            idx.indisunique as is_unique,
+            idx.indisprimary as is_primary,
+            ARRAY_AGG(a.attname ORDER BY k.ordinality) as columns
+          FROM pg_index idx
+          JOIN pg_class i ON i.oid = idx.indexrelid
+          JOIN pg_class t ON t.oid = idx.indrelid
+          JOIN pg_namespace n ON n.oid = t.relnamespace
+          CROSS JOIN LATERAL unnest(idx.indkey) WITH ORDINALITY AS k(attnum, ordinality)
+          JOIN pg_attribute a ON a.attrelid = t.oid AND a.attnum = k.attnum
+          WHERE n.nspname = 'public'
+            AND t.relname = $1
+          GROUP BY i.relname, idx.indisunique, idx.indisprimary
+        `, [tableName]);
+
+        const indexes = idxRes.rows.map((idx: any) => ({
+          id: crypto.randomUUID(),
+          name: idx.index_name,
+          columns: idx.columns,
+          isUnique: idx.is_unique,
+          isPrimary: idx.is_primary
+        }));
+
+        // Fetch constraints
+        const conRes = await client.query(`
+          SELECT
+            tc.constraint_name,
+            tc.constraint_type,
+            ARRAY_AGG(kcu.column_name) as columns,
+            cc.check_clause as definition
+          FROM information_schema.table_constraints tc
+          LEFT JOIN information_schema.key_column_usage kcu
+            ON tc.constraint_name = kcu.constraint_name
+            AND tc.table_schema = kcu.table_schema
+          LEFT JOIN information_schema.check_constraints cc
+            ON tc.constraint_name = cc.constraint_name
+            AND tc.constraint_schema = cc.constraint_schema
+          WHERE tc.table_schema = 'public'
+            AND tc.table_name = $1
+          GROUP BY tc.constraint_name, tc.constraint_type, cc.check_clause
+        `, [tableName]);
+
+        const constraints = conRes.rows.map((con: any) => ({
+          id: crypto.randomUUID(),
+          name: con.constraint_name,
+          type: con.constraint_type,
+          columns: con.columns || [],
+          definition: con.definition
         }));
 
         tables.push({
@@ -115,12 +238,57 @@ datasourceRouter.post('/test-connection', async (req, res) => {
           alias: tableName,
           description: '',
           exposed: true,
+          columns,
+          foreignKeys,
+          indexes,
+          constraints
+        });
+      }
+
+      // Fetch views
+      const viewsRes = await client.query(`
+        SELECT table_name, view_definition
+        FROM information_schema.views
+        WHERE table_schema = 'public'
+      `);
+      
+      const views: any[] = [];
+      for (const row of viewsRes.rows) {
+        const viewName = row.table_name;
+        
+        // Fetch view columns
+        const viewColsRes = await client.query(`
+          SELECT 
+            column_name, 
+            data_type,
+            is_nullable
+          FROM information_schema.columns
+          WHERE table_schema='public' AND table_name = $1
+        `, [viewName]);
+
+        const columns = viewColsRes.rows.map((c: any) => ({
+          id: crypto.randomUUID(),
+          name: c.column_name,
+          type: mapPgTypeToColumnType(c.data_type),
+          alias: c.column_name,
+          description: '',
+          sampleValue: '',
+          isNullable: c.is_nullable === 'YES'
+        }));
+
+        views.push({
+          id: crypto.randomUUID(),
+          name: viewName,
+          alias: viewName,
+          description: '',
+          definition: row.view_definition,
+          exposed: true,
           columns
         });
       }
 
       await client.end();
-      return res.json(tables);
+      return res.json({ tables, views });
     } catch (err) {
       console.error('[datasource] Postgres test failed', err || err);
       try { await client.end(); } catch (e) { }
@@ -161,9 +329,41 @@ datasourceRouter.post('/test-connection', async (req, res) => {
       for (const row of tableRows) {
         const tableName = row.table_name || row.TABLE_NAME || row.table_name;
         console.debug('[datasource] fetching columns for mssql table', { table: tableName });
-        const req = pool.request();
-        // Note: some drivers return recordset, others rows
-        const colsRes = await req.input('tableName', tableName).query(`SELECT column_name, data_type FROM information_schema.columns WHERE table_schema='dbo' AND table_name = @tableName`);
+        
+        // Fetch columns with additional metadata
+        const colsRes = await pool.request()
+          .input('tableName', tableName)
+          .query(`
+            SELECT 
+              c.column_name,
+              c.data_type,
+              c.is_nullable,
+              CASE WHEN pk.column_name IS NOT NULL THEN 1 ELSE 0 END as is_primary_key,
+              CASE WHEN uc.column_name IS NOT NULL THEN 1 ELSE 0 END as is_unique
+            FROM information_schema.columns c
+            LEFT JOIN (
+              SELECT ku.column_name
+              FROM information_schema.table_constraints tc
+              JOIN information_schema.key_column_usage ku 
+                ON tc.constraint_name = ku.constraint_name
+                AND tc.table_schema = ku.table_schema
+              WHERE tc.constraint_type = 'PRIMARY KEY'
+                AND tc.table_schema = 'dbo'
+                AND tc.table_name = @tableName
+            ) pk ON c.column_name = pk.column_name
+            LEFT JOIN (
+              SELECT ku.column_name
+              FROM information_schema.table_constraints tc
+              JOIN information_schema.key_column_usage ku 
+                ON tc.constraint_name = ku.constraint_name
+                AND tc.table_schema = ku.table_schema
+              WHERE tc.constraint_type = 'UNIQUE'
+                AND tc.table_schema = 'dbo'
+                AND tc.table_name = @tableName
+            ) uc ON c.column_name = uc.column_name
+            WHERE c.table_schema='dbo' AND c.table_name = @tableName
+          `);
+        
         const colRows = colsRes.rows || colsRes.recordset || [];
         console.debug('[datasource] mssql columns query returned rows', { table: tableName, count: colRows.length });
 
@@ -173,8 +373,119 @@ datasourceRouter.post('/test-connection', async (req, res) => {
           type: mapMssqlTypeToColumnType(c.data_type || c.DATA_TYPE),
           alias: c.column_name || c.COLUMN_NAME,
           description: '',
-          sampleValue: ''
+          sampleValue: '',
+          isNullable: (c.is_nullable || c.IS_NULLABLE) === 'YES',
+          isPrimaryKey: !!(c.is_primary_key || c.IS_PRIMARY_KEY),
+          isUnique: !!(c.is_unique || c.IS_UNIQUE)
         }));
+
+        // Fetch foreign keys
+        let foreignKeys: any[] = [];
+        try {
+          console.debug('[datasource] fetching foreign keys for mssql table', { table: tableName });
+          const fkRes = await pool.request()
+            .input('tableName', tableName)
+            .query(`
+              SELECT
+                fk.name as constraint_name,
+                COL_NAME(fkc.parent_object_id, fkc.parent_column_id) as column_name,
+                OBJECT_NAME(fkc.referenced_object_id) as referenced_table,
+                COL_NAME(fkc.referenced_object_id, fkc.referenced_column_id) as referenced_column,
+                fk.delete_referential_action_desc as on_delete,
+                fk.update_referential_action_desc as on_update
+              FROM sys.foreign_keys fk
+              INNER JOIN sys.foreign_key_columns fkc 
+                ON fk.object_id = fkc.constraint_object_id
+              WHERE OBJECT_NAME(fk.parent_object_id) = @tableName
+            `);
+          
+          const fkRows = fkRes.rows || fkRes.recordset || [];
+          console.debug('[datasource] mssql foreign keys query returned rows', { table: tableName, count: fkRows.length });
+          foreignKeys = fkRows.map((fk: any) => ({
+            id: crypto.randomUUID(),
+            name: fk.constraint_name || fk.CONSTRAINT_NAME,
+            columnName: fk.column_name || fk.COLUMN_NAME,
+            referencedTable: fk.referenced_table || fk.REFERENCED_TABLE,
+            referencedColumn: fk.referenced_column || fk.REFERENCED_COLUMN,
+            onUpdate: fk.on_update || fk.ON_UPDATE,
+            onDelete: fk.on_delete || fk.ON_DELETE
+          }));
+        } catch (fkErr) {
+          console.error('[datasource] Failed to fetch foreign keys for table', tableName, fkErr);
+        }
+
+        // Fetch indexes
+        let indexes: any[] = [];
+        try {
+          console.debug('[datasource] fetching indexes for mssql table', { table: tableName });
+          const idxRes = await pool.request()
+            .input('tableName', tableName)
+            .query(`
+              SELECT
+                i.name as index_name,
+                i.is_unique,
+                i.is_primary_key,
+                STRING_AGG(c.name, ',') WITHIN GROUP (ORDER BY ic.key_ordinal) as columns
+              FROM sys.indexes i
+              INNER JOIN sys.index_columns ic 
+                ON i.object_id = ic.object_id AND i.index_id = ic.index_id
+              INNER JOIN sys.columns c 
+                ON ic.object_id = c.object_id AND ic.column_id = c.column_id
+              WHERE i.object_id = OBJECT_ID(@tableName)
+              GROUP BY i.name, i.is_unique, i.is_primary_key
+            `);
+          
+          const idxRows = idxRes.rows || idxRes.recordset || [];
+          console.debug('[datasource] mssql indexes query returned rows', { table: tableName, count: idxRows.length });
+          indexes = idxRows.map((idx: any) => ({
+            id: crypto.randomUUID(),
+            name: idx.index_name || idx.INDEX_NAME,
+            columns: (idx.columns || idx.COLUMNS || '').split(','),
+            isUnique: !!(idx.is_unique || idx.IS_UNIQUE),
+            isPrimary: !!(idx.is_primary_key || idx.IS_PRIMARY_KEY)
+          }));
+        } catch (idxErr) {
+          console.error('[datasource] Failed to fetch indexes for table', tableName, idxErr);
+        }
+
+        // Fetch constraints
+        let constraints: any[] = [];
+        try {
+          console.debug('[datasource] fetching constraints for mssql table', { table: tableName });
+          const conRes = await pool.request()
+            .input('tableName', tableName)
+            .query(`
+              SELECT
+                tc.constraint_name,
+                tc.constraint_type,
+                STUFF((
+                  SELECT ',' + kcu.column_name
+                  FROM information_schema.key_column_usage kcu
+                  WHERE kcu.constraint_name = tc.constraint_name
+                    AND kcu.table_schema = tc.table_schema
+                  FOR XML PATH('')
+                ), 1, 1, '') as columns,
+                cc.check_clause as definition
+              FROM information_schema.table_constraints tc
+              LEFT JOIN information_schema.check_constraints cc
+                ON tc.constraint_name = cc.constraint_name
+                AND tc.constraint_schema = cc.constraint_schema
+              WHERE tc.table_schema = 'dbo'
+                AND tc.table_name = @tableName
+            `);
+          
+          const conRows = conRes.rows || conRes.recordset || [];
+          console.debug('[datasource] mssql constraints query returned rows', { table: tableName, count: conRows.length });
+          constraints = conRows.map((con: any) => ({
+            id: crypto.randomUUID(),
+            name: con.constraint_name || con.CONSTRAINT_NAME,
+            type: con.constraint_type || con.CONSTRAINT_TYPE,
+            columns: (con.columns || con.COLUMNS || '').split(',').filter((c: string) => c),
+            definition: con.definition || con.DEFINITION
+          }));
+        } catch (conErr) {
+          console.error('[datasource] Failed to fetch constraints for table', tableName, conErr);
+        }
 
         tables.push({
           id: crypto.randomUUID(),
@@ -182,12 +493,74 @@ datasourceRouter.post('/test-connection', async (req, res) => {
           alias: tableName,
           description: '',
           exposed: true,
-          columns
+          columns,
+          foreignKeys,
+          indexes,
+          constraints
         });
       }
 
+      // Fetch views
+      let views: any[] = [];
+      try {
+        console.debug('[datasource] fetching views for mssql database');
+        const viewsRes = await pool.request().query(`
+          SELECT 
+            v.table_name,
+            m.definition
+          FROM information_schema.views v
+          LEFT JOIN sys.sql_modules m 
+            ON m.object_id = OBJECT_ID(v.table_schema + '.' + v.table_name)
+          WHERE v.table_schema = 'dbo'
+        `);
+        
+        const viewRows = viewsRes.rows || viewsRes.recordset || [];
+        console.debug('[datasource] mssql views query returned rows', { count: viewRows.length });
+        
+        for (const row of viewRows) {
+          const viewName = row.table_name || row.TABLE_NAME;
+          console.debug('[datasource] fetching columns for mssql view', { view: viewName });
+          
+          // Fetch view columns
+          const viewColsRes = await pool.request()
+            .input('viewName', viewName)
+            .query(`
+              SELECT 
+                column_name,
+                data_type,
+                is_nullable
+              FROM information_schema.columns
+              WHERE table_schema='dbo' AND table_name = @viewName
+            `);
+
+          const viewColRows = viewColsRes.rows || viewColsRes.recordset || [];
+          console.debug('[datasource] mssql view columns query returned rows', { view: viewName, count: viewColRows.length });
+          const columns = viewColRows.map((c: any) => ({
+            id: crypto.randomUUID(),
+            name: c.column_name || c.COLUMN_NAME,
+            type: mapMssqlTypeToColumnType(c.data_type || c.DATA_TYPE),
+            alias: c.column_name || c.COLUMN_NAME,
+            description: '',
+            sampleValue: '',
+            isNullable: (c.is_nullable || c.IS_NULLABLE) === 'YES'
+          }));
+
+          views.push({
+            id: crypto.randomUUID(),
+            name: viewName,
+            alias: viewName,
+            description: '',
+            definition: row.definition || row.DEFINITION,
+            exposed: true,
+            columns
+          });
+        }
+      } catch (viewErr) {
+        console.error('[datasource] Failed to fetch views', viewErr);
+      }
+
       await pool.close();
-      return res.json(tables);
+      return res.json({ tables, views });
     } catch (err) {
       console.error('[datasource] MSSQL test failed', err || err);
       return res.status(502).json({ error: 'Unable to connect or fetch schema' });
@@ -215,9 +588,13 @@ datasourceRouter.post('/query', async (req, res) => {
     ds = minimal;
   }
 
-  // Find the table definition in stored metadata to validate columns
-  const tbl = (ds.tables || []).find((t: any) => t.name === table || t.id === table);
-  if (!tbl) return res.status(400).json({ error: 'table not found on datasource' });
+  // Find the table or view definition in stored metadata to validate columns
+  let tbl = (ds.tables || []).find((t: any) => t.name === table || t.id === table);
+  if (!tbl) {
+    // Check if it's a view
+    tbl = (ds.views || []).find((v: any) => v.name === table || v.id === table);
+  }
+  if (!tbl) return res.status(400).json({ error: 'table or view not found on datasource' });
 
   const allowedCols = (tbl.columns || []).map((c: any) => c.name);
   // Validate requested columns are subset
