@@ -571,9 +571,203 @@ datasourceRouter.post('/test-connection', async (req, res) => {
   return res.status(400).json({ error: 'unsupported type' });
 });
 
+// Helper function to build WHERE clause for PostgreSQL
+function buildPostgresWhereClause(filters: any[], tbl: any, paramOffset = 1): { whereClause: string, params: any[] } {
+  if (!filters || filters.length === 0) return { whereClause: '', params: [] };
+
+  const conditions: string[] = [];
+  const params: any[] = [];
+  let paramIndex = paramOffset;
+
+  for (const filter of filters) {
+    const column = (tbl.columns || []).find((c: any) => c.id === filter.columnId || c.name === filter.columnId);
+    if (!column) continue; // Skip invalid columns
+
+    const columnName = `"${column.name.replace(/"/g, '""')}"`;
+
+    switch (filter.operator) {
+      case 'equals':
+        conditions.push(`${columnName} = $${paramIndex}`);
+        params.push(filter.value);
+        paramIndex++;
+        break;
+      case 'not_equals':
+        conditions.push(`${columnName} != $${paramIndex}`);
+        params.push(filter.value);
+        paramIndex++;
+        break;
+      case 'contains':
+        conditions.push(`${columnName} LIKE $${paramIndex}`);
+        params.push(`%${filter.value}%`);
+        paramIndex++;
+        break;
+      case 'not_contains':
+        conditions.push(`${columnName} NOT LIKE $${paramIndex}`);
+        params.push(`%${filter.value}%`);
+        paramIndex++;
+        break;
+      case 'starts_with':
+        conditions.push(`${columnName} LIKE $${paramIndex}`);
+        params.push(`${filter.value}%`);
+        paramIndex++;
+        break;
+      case 'ends_with':
+        conditions.push(`${columnName} LIKE $${paramIndex}`);
+        params.push(`%${filter.value}`);
+        paramIndex++;
+        break;
+      case 'gt':
+        conditions.push(`${columnName} > $${paramIndex}`);
+        params.push(filter.value);
+        paramIndex++;
+        break;
+      case 'gte':
+        conditions.push(`${columnName} >= $${paramIndex}`);
+        params.push(filter.value);
+        paramIndex++;
+        break;
+      case 'lt':
+        conditions.push(`${columnName} < $${paramIndex}`);
+        params.push(filter.value);
+        paramIndex++;
+        break;
+      case 'lte':
+        conditions.push(`${columnName} <= $${paramIndex}`);
+        params.push(filter.value);
+        paramIndex++;
+        break;
+      case 'between':
+        conditions.push(`${columnName} BETWEEN $${paramIndex} AND $${paramIndex + 1}`);
+        params.push(filter.value, filter.value2 || filter.value);
+        paramIndex += 2;
+        break;
+      case 'is_null':
+        conditions.push(`${columnName} IS NULL`);
+        break;
+      case 'is_not_null':
+        conditions.push(`${columnName} IS NOT NULL`);
+        break;
+      case 'is_empty':
+        conditions.push(`(${columnName} IS NULL OR ${columnName} = '')`);
+        break;
+      case 'is_not_empty':
+        conditions.push(`(${columnName} IS NOT NULL AND ${columnName} != '')`);
+        break;
+      case 'in':
+        const values = filter.value.split(',').map((v: string) => v.trim()).filter((v: string) => v);
+        if (values.length > 0) {
+          const placeholders = values.map((_: any, idx: number) => `$${paramIndex + idx}`).join(', ');
+          conditions.push(`${columnName} IN (${placeholders})`);
+          params.push(...values);
+          paramIndex += values.length;
+        }
+        break;
+      case 'today':
+        conditions.push(`DATE(${columnName}) = CURRENT_DATE`);
+        break;
+      case 'this_week':
+        conditions.push(`DATE_TRUNC('week', ${columnName}) = DATE_TRUNC('week', CURRENT_DATE)`);
+        break;
+      case 'this_month':
+        conditions.push(`DATE_TRUNC('month', ${columnName}) = DATE_TRUNC('month', CURRENT_DATE)`);
+        break;
+      case 'this_year':
+        conditions.push(`DATE_TRUNC('year', ${columnName}) = DATE_TRUNC('year', CURRENT_DATE)`);
+        break;
+    }
+  }
+
+  const whereClause = conditions.length > 0 ? ` WHERE ${conditions.join(' AND ')}` : '';
+  return { whereClause, params };
+}
+
+// Helper function to build WHERE clause for SQL Server
+function buildMssqlWhereClause(filters: any[], tbl: any): string {
+  if (!filters || filters.length === 0) return '';
+
+  const conditions: string[] = [];
+
+  for (const filter of filters) {
+    const column = (tbl.columns || []).find((c: any) => c.id === filter.columnId || c.name === filter.columnId);
+    if (!column) continue; // Skip invalid columns
+
+    const columnName = `[${column.name.replace(/\]/g, '')}]`;
+    const escape = (val: string) => val.replace(/'/g, "''");
+
+    switch (filter.operator) {
+      case 'equals':
+        conditions.push(`${columnName} = '${escape(filter.value)}'`);
+        break;
+      case 'not_equals':
+        conditions.push(`${columnName} != '${escape(filter.value)}'`);
+        break;
+      case 'contains':
+        conditions.push(`${columnName} LIKE '%${escape(filter.value)}%'`);
+        break;
+      case 'not_contains':
+        conditions.push(`${columnName} NOT LIKE '%${escape(filter.value)}%'`);
+        break;
+      case 'starts_with':
+        conditions.push(`${columnName} LIKE '${escape(filter.value)}%'`);
+        break;
+      case 'ends_with':
+        conditions.push(`${columnName} LIKE '%${escape(filter.value)}'`);
+        break;
+      case 'gt':
+        conditions.push(`${columnName} > '${escape(filter.value)}'`);
+        break;
+      case 'gte':
+        conditions.push(`${columnName} >= '${escape(filter.value)}'`);
+        break;
+      case 'lt':
+        conditions.push(`${columnName} < '${escape(filter.value)}'`);
+        break;
+      case 'lte':
+        conditions.push(`${columnName} <= '${escape(filter.value)}'`);
+        break;
+      case 'between':
+        conditions.push(`${columnName} BETWEEN '${escape(filter.value)}' AND '${escape(filter.value2 || filter.value)}'`);
+        break;
+      case 'is_null':
+        conditions.push(`${columnName} IS NULL`);
+        break;
+      case 'is_not_null':
+        conditions.push(`${columnName} IS NOT NULL`);
+        break;
+      case 'is_empty':
+        conditions.push(`(${columnName} IS NULL OR ${columnName} = '')`);
+        break;
+      case 'is_not_empty':
+        conditions.push(`(${columnName} IS NOT NULL AND ${columnName} != '')`);
+        break;
+      case 'in':
+        const values = filter.value.split(',').map((v: string) => v.trim()).filter((v: string) => v);
+        if (values.length > 0) {
+          const quotedValues = values.map((v: string) => `'${escape(v)}'`).join(', ');
+          conditions.push(`${columnName} IN (${quotedValues})`);
+        }
+        break;
+      case 'today':
+        conditions.push(`CAST(${columnName} AS DATE) = CAST(GETDATE() AS DATE)`);
+        break;
+      case 'this_week':
+        conditions.push(`DATEPART(week, ${columnName}) = DATEPART(week, GETDATE()) AND DATEPART(year, ${columnName}) = DATEPART(year, GETDATE())`);
+        break;
+      case 'this_month':
+        conditions.push(`MONTH(${columnName}) = MONTH(GETDATE()) AND YEAR(${columnName}) = YEAR(GETDATE())`);
+        break;
+      case 'this_year':
+        conditions.push(`YEAR(${columnName}) = YEAR(GETDATE())`);
+        break;
+    }
+  }
+
+  return conditions.length > 0 ? ` WHERE ${conditions.join(' AND ')}` : '';
+}
+
 // New: Query a datasource table for real data (limited, safe)
 datasourceRouter.post('/query', async (req, res) => {
-  const { dataSourceId, dataSource: adHocDataSource, table, columns, limit = 50 } = req.body || {};
+  const { dataSourceId, dataSource: adHocDataSource, table, columns, limit = 50, filters } = req.body || {};
   if ((!dataSourceId && !adHocDataSource) || !table || !Array.isArray(columns) || columns.length === 0) return res.status(400).json({ error: 'dataSourceId or dataSource, table and columns required' });
 
   const repo = AppDataSource.getRepository(DataSourceEntity);
@@ -612,8 +806,19 @@ datasourceRouter.post('/query', async (req, res) => {
 
       // Quote identifiers
       const quotedCols = columns.map(c => `"${c.replace(/"/g, '""')}"`).join(', ');
-      const q = `SELECT ${quotedCols} FROM "public"."${tbl.name.replace(/"/g, '""')}" LIMIT $1`;
-      const result = await client.query(q, [Number(limit) || 50]);
+      
+      // Build WHERE clause from filters
+      const { whereClause, params: filterParams } = buildPostgresWhereClause(filters || [], tbl, 1);
+      
+      // Build query with filters
+      const limitParam = filterParams.length + 1;
+      const q = `SELECT ${quotedCols} FROM "public"."${tbl.name.replace(/"/g, '""')}"${whereClause} LIMIT $${limitParam}`;
+      const queryParams = [...filterParams, Number(limit) || 50];
+      
+      console.log('[datasource] Executing PostgreSQL query:', q);
+      console.log('[datasource] Query params:', queryParams);
+      
+      const result = await client.query(q, queryParams);
       await client.end();
       return res.json(result.rows || []);
     } else if (ds.type === 'sql') {
@@ -625,7 +830,15 @@ datasourceRouter.post('/query', async (req, res) => {
       const pool = new ConnectionPool({ server: cd.host, port: Number(cd.port) || 1433, database: cd.database, user: cd.username, password: cd.password, options: { encrypt: false, trustServerCertificate: true } });
       await pool.connect();
       const quotedCols = columns.map(c => `[${c.replace(/\]/g, '')}]`).join(', ');
-      const q = `SELECT TOP (${Number(limit) || 50}) ${quotedCols} FROM [dbo].[${tbl.name}]`;
+      
+      // Build WHERE clause from filters
+      const whereClause = buildMssqlWhereClause(filters || [], tbl);
+      
+      // Build query with filters
+      const q = `SELECT TOP (${Number(limit) || 50}) ${quotedCols} FROM [dbo].[${tbl.name}]${whereClause}`;
+      
+      console.log('[datasource] Executing SQL Server query:', q);
+      
       const r = await pool.request().query(q);
       await pool.close();
       return res.json(r.recordset || r.rows || []);
