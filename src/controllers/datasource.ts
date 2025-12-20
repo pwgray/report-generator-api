@@ -767,7 +767,7 @@ function buildMssqlWhereClause(filters: any[], tbl: any): string {
 
 // New: Query a datasource table for real data (limited, safe)
 datasourceRouter.post('/query', async (req, res) => {
-  const { dataSourceId, dataSource: adHocDataSource, table, columns, limit = 50, filters } = req.body || {};
+  const { dataSourceId, dataSource: adHocDataSource, table, columns, limit = 50, filters, sorts } = req.body || {};
   if ((!dataSourceId && !adHocDataSource) || !table || !Array.isArray(columns) || columns.length === 0) return res.status(400).json({ error: 'dataSourceId or dataSource, table and columns required' });
 
   const repo = AppDataSource.getRepository(DataSourceEntity);
@@ -810,9 +810,25 @@ datasourceRouter.post('/query', async (req, res) => {
       // Build WHERE clause from filters
       const { whereClause, params: filterParams } = buildPostgresWhereClause(filters || [], tbl, 1);
       
-      // Build query with filters
+      // Build ORDER BY clause from sorts
+      let orderByClause = '';
+      if (sorts && Array.isArray(sorts) && sorts.length > 0) {
+        const orderParts = sorts.map((sort: any) => {
+          const col = (tbl.columns || []).find((c: any) => c.id === sort.columnId);
+          if (!col) return null;
+          const quotedCol = `"${col.name.replace(/"/g, '""')}"`;
+          const direction = sort.direction === 'desc' ? 'DESC' : 'ASC';
+          return `${quotedCol} ${direction}`;
+        }).filter(Boolean);
+        
+        if (orderParts.length > 0) {
+          orderByClause = ` ORDER BY ${orderParts.join(', ')}`;
+        }
+      }
+      
+      // Build query with filters and sorting
       const limitParam = filterParams.length + 1;
-      const q = `SELECT ${quotedCols} FROM "public"."${tbl.name.replace(/"/g, '""')}"${whereClause} LIMIT $${limitParam}`;
+      const q = `SELECT ${quotedCols} FROM "public"."${tbl.name.replace(/"/g, '""')}"${whereClause}${orderByClause} LIMIT $${limitParam}`;
       const queryParams = [...filterParams, Number(limit) || 50];
       
       console.log('[datasource] Executing PostgreSQL query:', q);
@@ -834,8 +850,24 @@ datasourceRouter.post('/query', async (req, res) => {
       // Build WHERE clause from filters
       const whereClause = buildMssqlWhereClause(filters || [], tbl);
       
-      // Build query with filters
-      const q = `SELECT TOP (${Number(limit) || 50}) ${quotedCols} FROM [dbo].[${tbl.name}]${whereClause}`;
+      // Build ORDER BY clause from sorts
+      let orderByClause = '';
+      if (sorts && Array.isArray(sorts) && sorts.length > 0) {
+        const orderParts = sorts.map((sort: any) => {
+          const col = (tbl.columns || []).find((c: any) => c.id === sort.columnId);
+          if (!col) return null;
+          const quotedCol = `[${col.name.replace(/\]/g, '')}]`;
+          const direction = sort.direction === 'desc' ? 'DESC' : 'ASC';
+          return `${quotedCol} ${direction}`;
+        }).filter(Boolean);
+        
+        if (orderParts.length > 0) {
+          orderByClause = ` ORDER BY ${orderParts.join(', ')}`;
+        }
+      }
+      
+      // Build query with filters and sorting
+      const q = `SELECT TOP (${Number(limit) || 50}) ${quotedCols} FROM [dbo].[${tbl.name}]${whereClause}${orderByClause}`;
       
       console.log('[datasource] Executing SQL Server query:', q);
       
