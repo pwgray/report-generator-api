@@ -44,23 +44,43 @@ describe('POST /api/datasources/test-connection', () => {
     const mockClient = createMockPgClient();
     applyMockPgClient(mockClient);
 
-    // First call (tables) then columns for each table
+    // Mock all queries made by the enhanced schema fetching
     mockClient.query
+      // 1. Tables query
       .mockResolvedValueOnce({ rows: [{ table_name: 'users' }, { table_name: 'orders' }] })
-      // columns for users
+      // For 'users' table:
+      // 2. columns
       .mockResolvedValueOnce({ rows: [{ column_name: 'id', data_type: 'integer' }, { column_name: 'name', data_type: 'character varying' }] })
-      // columns for orders
-      .mockResolvedValueOnce({ rows: [{ column_name: 'id', data_type: 'integer' }, { column_name: 'total', data_type: 'numeric' }] });
+      // 3. foreign keys
+      .mockResolvedValueOnce({ rows: [] })
+      // 4. indexes
+      .mockResolvedValueOnce({ rows: [] })
+      // 5. constraints
+      .mockResolvedValueOnce({ rows: [] })
+      // For 'orders' table:
+      // 6. columns
+      .mockResolvedValueOnce({ rows: [{ column_name: 'id', data_type: 'integer' }, { column_name: 'total', data_type: 'numeric' }] })
+      // 7. foreign keys
+      .mockResolvedValueOnce({ rows: [] })
+      // 8. indexes
+      .mockResolvedValueOnce({ rows: [] })
+      // 9. constraints
+      .mockResolvedValueOnce({ rows: [] })
+      // 10. Views query
+      .mockResolvedValueOnce({ rows: [] });
 
     const res = await request(app)
       .post('/api/datasources/test-connection')
       .send({ type: 'postgres', connectionDetails: { host: 'localhost', port: '5432', database: 'db', username: 'u', password: 'p' } });
 
     expect(res.status).toBe(200);
-    expect(Array.isArray(res.body)).toBe(true);
-    expect(res.body.length).toBe(2);
-    expect(res.body[0].columns.length).toBe(2);
-    expect(res.body[0].columns[0].type).toBeDefined();
+    expect(res.body).toHaveProperty('tables');
+    expect(res.body).toHaveProperty('views');
+    expect(Array.isArray(res.body.tables)).toBe(true);
+    expect(Array.isArray(res.body.views)).toBe(true);
+    expect(res.body.tables.length).toBe(2);
+    expect(res.body.tables[0].columns.length).toBe(2);
+    expect(res.body.tables[0].columns[0].type).toBeDefined();
   });
 
   it('returns 400 for missing params', async () => {
@@ -84,21 +104,43 @@ describe('POST /api/datasources/test-connection', () => {
     // set the runtime pool instance used by the controller
     (mssqlModule as any).__setPool(mockPool);
 
-    // tables, then columns for each table
+    // Mock all queries made by the enhanced schema fetching
     mockPool._query
+      // 1. Tables query
       .mockResolvedValueOnce({ recordset: [{ table_name: 'users' }, { table_name: 'orders' }] })
+      // For 'users' table:
+      // 2. columns
       .mockResolvedValueOnce({ recordset: [{ column_name: 'id', data_type: 'int' }, { column_name: 'name', data_type: 'varchar' }] })
-      .mockResolvedValueOnce({ recordset: [{ column_name: 'id', data_type: 'int' }, { column_name: 'total', data_type: 'numeric' }] });
+      // 3. foreign keys
+      .mockResolvedValueOnce({ recordset: [] })
+      // 4. indexes
+      .mockResolvedValueOnce({ recordset: [] })
+      // 5. constraints
+      .mockResolvedValueOnce({ recordset: [] })
+      // For 'orders' table:
+      // 6. columns
+      .mockResolvedValueOnce({ recordset: [{ column_name: 'id', data_type: 'int' }, { column_name: 'total', data_type: 'numeric' }] })
+      // 7. foreign keys
+      .mockResolvedValueOnce({ recordset: [] })
+      // 8. indexes
+      .mockResolvedValueOnce({ recordset: [] })
+      // 9. constraints
+      .mockResolvedValueOnce({ recordset: [] })
+      // 10. Views query
+      .mockResolvedValueOnce({ recordset: [] });
 
     const res = await request(app)
       .post('/api/datasources/test-connection')
       .send({ type: 'sql', connectionDetails: { host: 'localhost', port: '1433', database: 'db', username: 'u', password: 'p' } });
 
     expect(res.status).toBe(200);
-    expect(Array.isArray(res.body)).toBe(true);
-    expect(res.body.length).toBe(2);
-    expect(res.body[0].columns.length).toBe(2);
-    expect(res.body[0].columns[0].type).toBeDefined();
+    expect(res.body).toHaveProperty('tables');
+    expect(res.body).toHaveProperty('views');
+    expect(Array.isArray(res.body.tables)).toBe(true);
+    expect(Array.isArray(res.body.views)).toBe(true);
+    expect(res.body.tables.length).toBe(2);
+    expect(res.body.tables[0].columns.length).toBe(2);
+    expect(res.body.tables[0].columns[0].type).toBeDefined();
   });
 
   it('returns 502 for mssql connection failure', async () => {
