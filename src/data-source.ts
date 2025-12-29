@@ -3,6 +3,7 @@ import dotenv from 'dotenv';
 import { DataSource, DataSourceOptions } from 'typeorm';
 import { DataSourceEntity } from './entities/DataSourceEntity.js';
 import { ReportEntity } from './entities/ReportEntity.js';
+import { ReportViewEntity } from './entities/ReportViewEntity.js';
 
 // Load .env file at the top of this module so environment variables are available
 dotenv.config();
@@ -19,7 +20,7 @@ const getDatabaseConfig = (): DataSourceOptions => {
   const baseConfig = {
     synchronize: process.env.DB_SYNCHRONIZE !== 'false', // Default true for development
     logging: process.env.DB_LOGGING === 'true', // Default false
-    entities: [DataSourceEntity, ReportEntity]
+    entities: [DataSourceEntity, ReportEntity, ReportViewEntity]
   };
   
   console.log(`[DB Config] Synchronize will be: ${baseConfig.synchronize}`);
